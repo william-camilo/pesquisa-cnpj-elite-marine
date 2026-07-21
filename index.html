@@ -44,21 +44,18 @@
     button { cursor: pointer; }
     a { color: inherit; }
 
-    .topbar {
-      background: var(--navy);
-      color: rgba(255,255,255,.86);
-      font-size: 11px;
-      text-align: center;
-      padding: 9px 16px;
-    }
+    .topbar { display: none; }
 
     .site-header {
-      width: min(1120px, calc(100% - 32px));
-      margin: 24px auto 0;
+      width: 100%;
+      margin: 0;
+      padding: 18px 24px 20px;
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 112px;
+      min-height: 150px;
+      background: #ffffff;
+      border-bottom: 1px solid #e7edf2;
     }
 
     .brand-image {
@@ -420,12 +417,12 @@
     @media (max-width: 860px) {
       .hero { grid-template-columns: 1fr; }
       .features { grid-template-columns: 1fr; }
-      .site-header { min-height: 90px; }
+      .site-header { min-height: 110px; padding: 14px 18px 16px; }
     }
 
     @media (max-width: 600px) {
       main { width: min(100% - 20px, 1120px); margin-top: 16px; }
-      .site-header { width: min(100% - 24px, 1120px); margin-top: 16px; }
+      .site-header { width: 100%; margin: 0; padding: 12px 14px 14px; }
       .hero-copy, .search-card { border-radius: 18px; }
       h1 { font-size: 38px; }
       .data-grid { grid-template-columns: 1fr; }
