@@ -1,0 +1,20 @@
+PESQUISA CNPJ ELITE MARINE - LANDING PAGE
+
+Alterações realizadas:
+
+1. Nova página inicial em formato landing page responsiva.
+2. Imagem Pesquisa CNPJ Elite Marine aplicada no cabeçalho e no rodapé.
+3. Área principal de consulta preservada e destacada no início da página.
+4. Seções de vantagens, funcionamento e chamada para consulta.
+5. Resultado da consulta reorganizado para facilitar a leitura.
+6. Histórico de pesquisas mantido com busca por nome ou CNPJ.
+7. Cadastro, edição e exclusão de apelidos preservados.
+8. Página liberada para visualização pública, sem redirecionamento obrigatório para login.
+9. Ajustes para computador, tablet e celular.
+10. Identidade visual em azul, branco e cinza, seguindo a imagem da Elite Marine.
+
+Arquivo principal alterado:
+client/src/pages/Home.tsx
+
+Imagem usada:
+client/public/pesquisa-cnpj-elite-marine.png
