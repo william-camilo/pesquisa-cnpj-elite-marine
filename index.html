@@ -264,7 +264,11 @@
     .partner-role { font-size: 12px; color: var(--muted); margin-top: 2px; }
     .empty-note { color: var(--muted); font-size: 13px; }
 
-    .source-line { margin-top: 16px; color: #7a8d9c; font-size: 12px; }
+    .source-line { margin-top: 16px; color: #7a8d9c; font-size: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .refresh-btn { border: 1px solid var(--border); background: #fff; color: var(--navy); border-radius: 999px; padding: 4px 11px; font-size: 12px; font-weight: 750; cursor: pointer; }
+    .refresh-btn:hover { border-color: #9fcfda; background: #f5fcfd; }
+    .cache-tag { background: #eef6f8; color: #2b6a7c; border-radius: 999px; padding: 2px 9px; font-weight: 750; }
+    .history-filter { width: 100%; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; font: inherit; font-size: 14px; }
 
     /* ---------- Histórico ---------- */
     .history-card { margin-top: 28px; padding: 24px 26px; box-shadow: 0 12px 34px rgba(3,42,74,.07); }
@@ -433,6 +437,7 @@
         <h2 id="historyTitle">Pesquisas recentes</h2>
         <button id="clearHistory" class="clear-btn" type="button">Limpar histórico</button>
       </div>
+      <input id="historyFilter" class="history-filter" type="search" placeholder="Filtrar por nome ou CNPJ..." autocomplete="off" hidden />
       <div id="historyList" class="history-list"></div>
     </section>
 
@@ -454,6 +459,16 @@
     const HISTORY_KEY = 'eliteMarineCnpjHistoryV1';   // mesma chave da versão anterior: o histórico antigo continua aparecendo
     const MAX_HISTORY = 10;
     const REQUEST_TIMEOUT_MS = 12000;
+
+    // ===== Histórico compartilhado (Supabase) =====
+    // Cole aqui a URL do projeto e a chave "anon public" (Supabase → Project Settings → API).
+    // A chave anon é pública por natureza; a proteção vem das regras (RLS) criadas no supabase.sql.
+    // Se ficarem vazias, o site volta a usar só o histórico local do navegador.
+    const SUPABASE_URL = 'https://tzimcytemznzdlmydkfs.supabase.co';          // ex.: 'https://abcdxyz.supabase.co'
+    const SUPABASE_ANON_KEY = 'sb_publishable_ODfeVtwwXGHpTfmBqk7IGg_HpkFHRzP';     // ex.: 'eyJhbGciOi...'
+    const SHARED_HISTORY_SIZE = 50;   // quantas consultas mostrar na lista
+    const CACHE_MAX_AGE_DAYS = 0;     // 0 = usa sempre o histórico; ex.: 30 = refaz a consulta se o dado tiver mais de 30 dias
+    const SHARED = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
     // Ordem de tentativa. BrasilAPI e Minha Receita usam o mesmo formato de resposta;
     // CNPJ.ws tem formato próprio e é convertido em normalizeCnpjWs().
@@ -747,8 +762,59 @@
       }
     }
 
-    async function lookup(cnpj, signal) {
-      if (memoryCache.has(cnpj)) return memoryCache.get(cnpj);
+    /* ================= Supabase (REST direto, sem biblioteca) ================= */
+    async function sb(path, { method = 'GET', body = null, signal } = {}) {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+        method,
+        signal,
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          // chaves novas (sb_publishable_...) não são JWT: vão só no header apikey
+          ...(SUPABASE_ANON_KEY.startsWith('eyJ') ? { Authorization: `Bearer ${SUPABASE_ANON_KEY}` } : {}),
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: body ? JSON.stringify(body) : null
+      });
+      if (!res.ok) throw new Error(`Supabase ${res.status}`);
+      const text = await res.text();
+      return text ? JSON.parse(text) : null;
+    }
+
+    async function sharedGet(cnpj, signal) {
+      if (!SHARED) return null;
+      try {
+        const rows = await sb(`consultas_cnpj?cnpj=eq.${encodeURIComponent(cnpj)}&select=dados,fonte,consultado_em&limit=1`, { signal });
+        const row = rows && rows[0];
+        if (!row || !row.dados || !row.dados.razaoSocial) return null;
+        const at = new Date(row.consultado_em);
+        if (CACHE_MAX_AGE_DAYS > 0 && (Date.now() - at.getTime()) > CACHE_MAX_AGE_DAYS * 864e5) return null;
+        return { company: row.dados, source: row.fonte, at, cached: true };
+      } catch (err) {
+        if (signal && signal.aborted) throw err;
+        return null; // Supabase fora do ar: segue para as APIs normalmente
+      }
+    }
+
+    async function sharedSave(company, source) {
+      if (!SHARED) return;
+      try {
+        await sb('rpc/salvar_consulta', {
+          method: 'POST',
+          body: { p_cnpj: sanitizeCnpj(company.cnpj), p_razao_social: company.razaoSocial || '', p_dados: company, p_fonte: source }
+        });
+        loadSharedHistory();
+      } catch { /* não bloqueia a consulta se o salvamento falhar */ }
+    }
+
+    async function lookup(cnpj, signal, { force = false } = {}) {
+      if (!force && memoryCache.has(cnpj)) return memoryCache.get(cnpj);
+      if (!force) {
+        setLoading(true, 'Procurando no histórico...');
+        const cached = await sharedGet(cnpj, signal);
+        if (cached) { memoryCache.set(cnpj, cached); return cached; }
+        setLoading(true);
+      }
       let notFoundCount = 0, rateLimited = false;
       for (let i = 0; i < PROVIDERS.length; i++) {
         const p = PROVIDERS[i];
@@ -758,8 +824,9 @@
           const company = p.normalize(raw);
           if (!company.razaoSocial) throw new Error('resposta vazia');
           company.cnpj = company.cnpj || cnpj;
-          const result = { company, source: p.name, at: new Date() };
+          const result = { company, source: p.name, at: new Date(), cached: false };
           memoryCache.set(cnpj, result);
+          sharedSave(company, p.name);
           return result;
         } catch (err) {
           if (signal && signal.aborted) throw err;
@@ -773,7 +840,7 @@
       throw new Error('Nenhum serviço de consulta respondeu agora. Verifique sua internet e tente novamente em instantes.');
     }
 
-    async function searchCnpj(rawValue, { fromHistory = false } = {}) {
+    async function searchCnpj(rawValue, { fromHistory = false, force = false } = {}) {
       const v = validateCnpj(rawValue);
       if (!v.ok) {
         const msg = v.reason === 'length'
@@ -795,9 +862,9 @@
       resultCard.classList.remove('show');
 
       try {
-        const { company, source, at } = await lookup(v.clean, ctrl.signal);
+        const { company, source, at, cached } = await lookup(v.clean, ctrl.signal, { force });
         if (ctrl.signal.aborted) return;
-        renderCompany(company, source, at);
+        renderCompany(company, source, at, cached);
         setUrlCnpj(v.clean);
       } catch (error) {
         if (ctrl.signal.aborted) return;
@@ -855,7 +922,7 @@
       ].filter(x => !isBlank(x)).join(', ') || null;
     }
 
-    function renderCompany(c, source, at) {
+    function renderCompany(c, source, at, cached = false) {
       currentCompany = { ...c, source, at };
       const cnpjFmt = formatCnpj(c.cnpj);
 
@@ -983,11 +1050,28 @@
       }
       currentCompany.partners = socios;
 
-      $('sourceLine').textContent = `Fonte: ${source} · consultado em ${at.toLocaleDateString('pt-BR')} às ${at.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+      const srcLine = $('sourceLine');
+      const srcText = document.createElement('span');
+      srcText.textContent = `Fonte: ${source} · consultado em ${at.toLocaleDateString('pt-BR')} às ${at.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
+      const parts = [srcText];
+      if (cached) {
+        const tag = document.createElement('span');
+        tag.className = 'cache-tag';
+        tag.textContent = 'do histórico';
+        parts.unshift(tag);
+      }
+      const refresh = document.createElement('button');
+      refresh.type = 'button';
+      refresh.className = 'refresh-btn';
+      refresh.textContent = '↻ Atualizar agora';
+      refresh.title = 'Consultar de novo nos serviços públicos e atualizar o histórico';
+      refresh.addEventListener('click', () => searchCnpj(c.cnpj, { force: true }));
+      parts.push(refresh);
+      srcLine.replaceChildren(...parts);
 
       resultCard.classList.add('show');
       resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      saveHistory({ cnpj: cnpjFmt, name: orNA(c.razaoSocial), date: new Date().toISOString() });
+      if (!SHARED) saveHistory({ cnpj: cnpjFmt, name: orNA(c.razaoSocial), date: new Date().toISOString() });
     }
 
     /* ================= Ações do resultado ================= */
@@ -1029,7 +1113,7 @@
         lines.push('', 'Sócios e administradores:');
         currentCompany.partners.forEach(s => lines.push(`- ${s.nome}${s.qualificacao ? ` — ${s.qualificacao}` : ''}`));
       }
-      lines.push('', $('sourceLine').textContent, shareUrl(currentCompany.cnpj));
+      lines.push('', $('sourceLine').firstChild ? [...$('sourceLine').querySelectorAll('span')].map(e => e.textContent).join(' · ') : '', shareUrl(currentCompany.cnpj));
       toast(await copyText(lines.join('\n')) ? 'Dados copiados' : 'Não foi possível copiar. Selecione os dados na tela.');
     });
 
@@ -1073,13 +1157,33 @@
       renderHistory();
     }
 
+    /* ===== Histórico compartilhado ===== */
+    let sharedHistory = [];
+    async function loadSharedHistory() {
+      if (!SHARED) return;
+      try {
+        const rows = await sb(`consultas_cnpj?select=cnpj,razao_social,consultado_em&order=consultado_em.desc&limit=${SHARED_HISTORY_SIZE}`);
+        sharedHistory = (rows || []).map(r => ({ cnpj: formatCnpj(r.cnpj), name: r.razao_social || 'Sem razão social', date: r.consultado_em }));
+      } catch { sharedHistory = []; }
+      renderHistory();
+    }
+
     function renderHistory() {
-      const history = getHistory();
-      $('clearHistory').hidden = !history.length;
+      let history = SHARED ? sharedHistory : getHistory();
+      const filterEl = $('historyFilter');
+      if (SHARED) {
+        filterEl.hidden = !sharedHistory.length;
+        const q = filterEl.value.trim().toLowerCase();
+        const qDigits = sanitizeCnpj(q);
+        if (q) history = history.filter(h => h.name.toLowerCase().includes(q) || (qDigits && sanitizeCnpj(h.cnpj).includes(qDigits)));
+      }
+      $('clearHistory').hidden = SHARED || !history.length;
       if (!history.length) {
         const empty = document.createElement('div');
         empty.className = 'history-empty';
-        empty.textContent = 'Nenhuma consulta realizada neste navegador.';
+        empty.textContent = SHARED
+          ? ($('historyFilter').value ? 'Nenhuma consulta encontrada com esse filtro.' : 'Nenhuma consulta registrada ainda.')
+          : 'Nenhuma consulta realizada neste navegador.';
         historyList.replaceChildren(empty);
         return;
       }
@@ -1102,6 +1206,7 @@
         const dt = document.createElement('span');
         dt.className = 'history-date';
         dt.textContent = Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('pt-BR');
+        if (SHARED) { item.append(left, dt); item.addEventListener('click', () => { input.value = formatCnpj(entry.cnpj); updateInputState(); searchCnpj(entry.cnpj, { fromHistory: true }); }); row.append(item); return row; }
         item.append(left, dt);
         item.addEventListener('click', () => {
           input.value = formatCnpj(entry.cnpj);
@@ -1134,6 +1239,8 @@
       searchCnpj(input.value);
     });
 
+    $('historyFilter').addEventListener('input', renderHistory);
+    if (SHARED) { $('historyTitle').textContent = 'Histórico de consultas'; loadSharedHistory(); }
     renderHistory();
 
     const initial = new URLSearchParams(location.search).get('cnpj');

@@ -23,7 +23,8 @@ O navegador consulta, nesta ordem, até um responder:
 
 - Os dígitos verificadores são conferidos antes da consulta (numérico e alfanumérico, IN RFB 2.229/2024).
 - Link direto: `?cnpj=33000167000101` abre a consulta pronta.
-- O histórico (últimas 10 consultas) fica só no navegador de quem usa (`localStorage`).
+- **Histórico compartilhado (Supabase):** toda consulta fica salva na tabela `consultas_cnpj` e aparece para qualquer visitante. Se o CNPJ já está no histórico, os dados vêm de lá (sem chamar as APIs); o botão **↻ Atualizar agora** força uma consulta nova e atualiza o registro.
+- Sem `SUPABASE_URL`/`SUPABASE_ANON_KEY` preenchidos no `index.html`, o site volta ao histórico local do navegador (`localStorage`, 10 últimas).
 
 ## Publicar
 Qualquer alteração em `index.html` na branch `main` vai ao ar pelo GitHub Pages em 1–2 minutos.
@@ -31,3 +32,11 @@ Qualquer alteração em `index.html` na branch `main` vai ao ar pelo GitHub Page
 ## Aviso
 Dados públicos da Receita Federal, repassados por serviços de terceiros e sujeitos a atraso.
 Para decisões fiscais, jurídicas ou cadastrais, confirme nos canais oficiais da Receita Federal.
+
+## Configurar o Supabase
+1. Supabase → **SQL Editor** → cole o conteúdo de `supabase.sql` → **Run** (cria a tabela, as regras de leitura pública e a função `salvar_consulta`).
+2. Supabase → **Project Settings → API**: copie a *Project URL* e a chave *anon public*.
+3. No `index.html`, preencha `SUPABASE_URL` e `SUPABASE_ANON_KEY` (bloco "Histórico compartilhado").
+4. Opcional: `CACHE_MAX_AGE_DAYS = 30` faz o site reconsultar dados com mais de 30 dias (0 = usa sempre o histórico).
+
+Visitantes só leem a tabela; gravar é possível apenas pela função, que valida CNPJ, tamanho e fonte. Apagar registros: pelo painel do Supabase.
